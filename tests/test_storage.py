@@ -2,62 +2,47 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from campusflow.storage import load_tickets, save_tickets
+from campusflow.workflow import add_ticket, next_ticket_id
 
-from campusflow.storage import save_tickets, load_tickets
 
+class StorageTests(unittest.TestCase):
+    def test_save_and_reload_preserves_tickets(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "nested" / "tickets.json"
+            tickets = {}
+            add_ticket(tickets, "Wi-Fi", "Network", "high", 12)
+            save_tickets(tickets, path)
+            self.assertEqual(load_tickets(path), tickets)
 
-class TestStorage(unittest.TestCase):
+    def test_missing_file_returns_empty_dictionary(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertEqual(load_tickets(Path(folder) / "missing.json"), {})
 
-    def setUp(self):
-        # Create a temporary folder for test files
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.file_path = Path(self.temp_dir.name) / "tickets.json"
+    def test_corrupted_json_raises_clear_error(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "tickets.json"
+            path.write_text("{not json", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid JSON"):
+                load_tickets(path)
 
-        self.tickets = [
-            {
-                "id": "T001",
-                "title": "Internet is not working",
-                "category": "Network",
-                "urgency": "high",
-                "affected_users": 12,
-                "priority": "critical",
-                "status": "open",
-                "assigned_to": None,
-            }
-        ]
+    def test_non_object_json_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "tickets.json"
+            path.write_text("[]", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_tickets(path)
 
-    def tearDown(self):
-        # Remove the temporary folder after each test
-        self.temp_dir.cleanup()
-
-    def test_save_and_load_tickets(self):
-        # Save tickets and load them back
-        save_tickets(self.tickets, self.file_path)
-        loaded_tickets = load_tickets(self.file_path)
-
-        self.assertEqual(loaded_tickets, self.tickets)
-
-    def test_load_missing_file_returns_empty_list(self):
-        # A missing file should start with no tickets
-        loaded_tickets = load_tickets(self.file_path)
-
-        self.assertEqual(loaded_tickets, [])
-
-    def test_invalid_json_raises_error(self):
-        # Invalid JSON should raise a clear error
-        self.file_path.write_text("{invalid json")
-
-        with self.assertRaises(ValueError):
-            load_tickets(self.file_path)
-
-    def test_saved_file_contains_valid_json(self):
-        # Confirm that saved data is valid JSON
-        save_tickets(self.tickets, self.file_path)
-
-        with self.file_path.open("r", encoding="utf-8") as file:
-            loaded_data = json.load(file)
-
-        self.assertEqual(loaded_data, self.tickets)
+    def test_create_after_reload_does_not_duplicate_ids(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "tickets.json"
+            tickets = {}
+            add_ticket(tickets, "First", "Other", "low", 1)
+            save_tickets(tickets, path)
+            restored = load_tickets(path)
+            next_ticket = add_ticket(restored, "Second", "Other", "low", 1)
+            self.assertEqual(next_ticket["id"], "T002")
+            self.assertEqual(len(restored), 2)
 
 
 if __name__ == "__main__":
