@@ -34,13 +34,19 @@ def _get_ticket(tickets: dict, ticket_id: str) -> dict:
 
 
 def assign_ticket(tickets: dict, ticket_id: str, staff_name: str) -> dict:
-    """Assign a ticket to a non-empty staff name."""
+    """Assign an open or in-progress ticket to a non-empty staff name."""
     ticket = _get_ticket(tickets, ticket_id)
+
+    # Resolved tickets must be reopened before their assignment can change.
+    if ticket.get("status") == "resolved":
+        raise ValueError("Reopen the ticket before changing its assignment.")
+
+    # Reject a blank or invalid staff name before changing the ticket.
     if not isinstance(staff_name, str) or not staff_name.strip():
         raise ValueError("Staff member name must not be blank.")
+
     ticket["assigned_to"] = staff_name.strip()
     return ticket
-
 
 def update_ticket_status(tickets: dict, ticket_id: str, new_status: str) -> dict:
     """Apply allowed status transitions; unassigned tickets cannot be started."""

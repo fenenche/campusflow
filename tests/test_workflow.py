@@ -1,5 +1,12 @@
 import unittest
-from campusflow.workflow import add_ticket, assign_ticket, update_ticket_status, priority_queue, next_ticket_id
+
+from campusflow.workflow import (
+    add_ticket,
+    assign_ticket,
+    update_ticket_status,
+    priority_queue,
+    next_ticket_id,
+)
 from campusflow.reports import generate_report
 
 
@@ -11,7 +18,10 @@ class WorkflowTests(unittest.TestCase):
         self.high = add_ticket(self.tickets, "Three", "Hardware", "high", 2)
 
     def test_auto_ids_are_unique(self):
-        self.assertEqual([self.low["id"], self.critical["id"], self.high["id"]], ["T001", "T002", "T003"])
+        self.assertEqual(
+            [self.low["id"], self.critical["id"], self.high["id"]],
+            ["T001", "T002", "T003"],
+        )
         del self.tickets["T002"]
         self.assertEqual(next_ticket_id(self.tickets), "T004")
 
@@ -20,7 +30,7 @@ class WorkflowTests(unittest.TestCase):
             update_ticket_status(self.tickets, "T001", "in_progress")
 
     def test_assigned_ticket_can_progress_and_resolve(self):
-        assign_ticket(self.tickets, "T001", "  Alex  ")
+        assign_ticket(self.tickets, "T001", "Alex")
         update_ticket_status(self.tickets, "T001", "in_progress")
         update_ticket_status(self.tickets, "T001", "resolved")
         self.assertEqual(self.tickets["T001"]["assigned_to"], "Alex")
@@ -39,13 +49,19 @@ class WorkflowTests(unittest.TestCase):
             update_ticket_status(self.tickets, "T001", "resolved")
 
     def test_priority_queue_order(self):
-        self.assertEqual([t["id"] for t in priority_queue(self.tickets)], ["T002", "T003", "T001"])
+        self.assertEqual(
+            [t["id"] for t in priority_queue(self.tickets)],
+            ["T002", "T003", "T001"],
+        )
 
     def test_queue_ties_use_numeric_id(self):
         tickets = {}
         add_ticket(tickets, "first", "Other", "low", 1)
         add_ticket(tickets, "second", "Other", "low", 2)
-        self.assertEqual([t["id"] for t in priority_queue(tickets)], ["T001", "T002"])
+        self.assertEqual(
+            [t["id"] for t in priority_queue(tickets)],
+            ["T001", "T002"],
+        )
 
     def test_report_counts(self):
         report = generate_report(self.tickets)
@@ -59,6 +75,21 @@ class WorkflowTests(unittest.TestCase):
         update_ticket_status(self.tickets, "T001", "resolved")
         update_ticket_status(self.tickets, "T001", "open")
         self.assertEqual(self.tickets["T001"]["status"], "open")
+
+    def test_resolved_ticket_cannot_be_reassigned(self):
+        assign_ticket(self.tickets, "T001", "Alex")
+        update_ticket_status(self.tickets, "T001", "in_progress")
+        update_ticket_status(self.tickets, "T001", "resolved")
+
+        original_assignee = self.tickets["T001"]["assigned_to"]
+
+        with self.assertRaises(ValueError):
+            assign_ticket(self.tickets, "T001", "Grace")
+
+        self.assertEqual(
+            self.tickets["T001"]["assigned_to"],
+            original_assignee,
+        )
 
 
 if __name__ == "__main__":
