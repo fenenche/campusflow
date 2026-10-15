@@ -69,12 +69,18 @@ def main() -> None:
                 for ticket in queue:
                     _print_ticket(ticket)
             elif choice == "6":
-                report = generate_report(tickets)
-                print(f'Total tickets: {report["total"]}')
-                for section in ("by_status", "by_priority", "by_category"):
-                    print(f"{section.replace('_', ' ').title()}:")
-                    for label, count in report[section].items():
-                        print(f"  {label}: {count}")
+    report = generate_report(tickets)
+
+    print(f'Total tickets: {report["total"]}')
+
+    for section in ("by_status", "by_priority", "by_category"):
+        print(f"{section.replace('_', ' ').title()}:")
+        for label, count in report[section].items():
+            print(f"  {label}: {count}")
+
+    print(f'Unresolved tickets: {report["unresolved"]}')
+    print(f'Resolved tickets: {report["resolved"]}')
+    print(f'Resolution percentage: {report["resolution_percentage"]:.2f}%')
             else:
                 print("Unknown option. Choose a listed number.")
         except (ValueError, OSError) as exc:
