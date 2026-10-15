@@ -1,75 +1,109 @@
-"""Ticket lifecycle, assignment, ID generation, and priority queue."""
+"""Assignment, ticket lifecycle, and open-queue operations.
 
-from .tickets import create_ticket
+Business functions in this module do not perform CLI input/output.
+"""
 
-PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-VALID_STATUSES = {"open", "in_progress", "resolved"}
+from __future__ import annotations
 
+from typing import Any, Iterable
 
-def next_ticket_id(tickets: dict) -> str:
-    """Generate the next TNNN ID without reusing an existing numeric ID."""
-    largest = 0
-    for key in tickets:
-        if isinstance(key, str) and key.startswith("T") and key[1:].isdigit():
-            largest = max(largest, int(key[1:]))
-    candidate = largest + 1
-    while f"T{candidate:03d}" in tickets:
-        candidate += 1
-    return f"T{candidate:03d}"
+Ticket = dict[str, Any]
+
+_VALID_STATUSES = {"open", "in_progress", "resolved"}
+_PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
-def add_ticket(tickets: dict, title: str, category: str, urgency: str, affected_users: int) -> dict:
-    """Create and store a ticket in the supplied ticket mapping."""
-    ticket_id = next_ticket_id(tickets)
-    ticket = create_ticket(title, category, urgency, affected_users, ticket_id)
-    tickets[ticket_id] = ticket
-    return ticket
+def _find_ticket(tickets: Iterable[Ticket], ticket_id: int) -> Ticket:
+    """Return a ticket by its integer ID, or raise KeyError."""
+    if isinstance(ticket_id, bool) or not isinstance(ticket_id, int):
+        raise KeyError(ticket_id)
+
+    for ticket in tickets:
+        if ticket.get("id") == ticket_id:
+            return ticket
+    raise KeyError(ticket_id)
 
 
-def _get_ticket(tickets: dict, ticket_id: str) -> dict:
-    try:
-        return tickets[ticket_id]
-    except KeyError as exc:
-        raise ValueError(f"Unknown ticket ID: {ticket_id}.") from exc
+def assign_ticket(
+    tickets: list[Ticket], ticket_id: int, staff_name: str
+) -> Ticket:
+    """Assign a ticket to a nonblank staff name.
 
+    Resolved tickets are immutable until explicitly reopened.
+    """
+    ticket = _find_ticket(tickets, ticket_id)
 
-def assign_ticket(tickets: dict, ticket_id: str, staff_name: str) -> dict:
-    """Assign a ticket to a non-empty staff name."""
-    ticket = _get_ticket(tickets, ticket_id)
+    if ticket.get("status") == "resolved":
+        raise ValueError("Resolved tickets must be reopened before reassignment.")
     if not isinstance(staff_name, str) or not staff_name.strip():
-        raise ValueError("Staff member name must not be blank.")
+        raise ValueError("Staff name must not be blank.")
+
     ticket["assigned_to"] = staff_name.strip()
     return ticket
 
 
-def update_ticket_status(tickets: dict, ticket_id: str, new_status: str) -> dict:
-    """Apply allowed status transitions; unassigned tickets cannot be started."""
-    ticket = _get_ticket(tickets, ticket_id)
-    if not isinstance(new_status, str) or new_status.strip().lower() not in VALID_STATUSES:
-        raise ValueError("Status must be open, in_progress, or resolved.")
-    new_status = new_status.strip().lower()
-    current = ticket.get("status")
-    allowed = {
-        "open": {"in_progress"},
-        "in_progress": {"resolved"},
-        "resolved": {"open"},  # reopening is supported explicitly
+def change_status(
+    tickets: list[Ticket], ticket_id: int, new_status: str
+) -> Ticket:
+    """Apply an allowed forward status transition to a ticket."""
+    ticket = _find_ticket(tickets, ticket_id)
+
+    if ticket.get("status") == "resolved":
+        raise ValueError("Resolved tickets must be reopened before modification.")
+    if not isinstance(new_status, str):
+        raise ValueError("Status must be a string.")
+
+    requested_status = new_status.strip().lower()
+    if requested_status not in _VALID_STATUSES:
+        raise ValueError(
+            f"Invalid status {new_status!r}. Expected open, in_progress, or resolved."
+        )
+
+    current_status = ticket.get("status")
+    allowed_next = {
+        "open": "in_progress",
+        "in_progress": "resolved",
     }
-    if new_status == current:
-        return ticket
-    if new_status not in allowed.get(current, set()):
-        raise ValueError(f"Invalid status transition: {current} -> {new_status}.")
-    if new_status == "in_progress" and not ticket.get("assigned_to"):
-        raise ValueError("Assign the ticket before moving it to in_progress.")
-    ticket["status"] = new_status
+    if allowed_next.get(current_status) != requested_status:
+        raise ValueError(
+            f"Invalid status transition: {current_status!r} -> {requested_status!r}."
+        )
+    if requested_status == "in_progress" and not ticket.get("assigned_to"):
+        raise ValueError("A ticket must be assigned before it can be in progress.")
+
+    ticket["status"] = requested_status
     return ticket
 
 
-def priority_queue(tickets: dict) -> list:
-    """Return open tickets sorted by priority, then numeric ticket ID."""
-    def numeric_id(ticket: dict) -> int:
-        ticket_id = str(ticket.get("id", ""))
-        suffix = ticket_id[1:] if ticket_id.startswith("T") else ""
-        return int(suffix) if suffix.isdigit() else 10**12
+def reopen_ticket(tickets: list[Ticket], ticket_id: int) -> Ticket:
+    """Explicitly reopen a resolved ticket, setting its status to open."""
+    ticket = _find_ticket(tickets, ticket_id)
+    if ticket.get("status") != "resolved":
+        raise ValueError("Only resolved tickets can be reopened.")
 
-    opened = [ticket for ticket in tickets.values() if ticket.get("status") == "open"]
-    return sorted(opened, key=lambda t: (PRIORITY_ORDER.get(t.get("priority"), 99), numeric_id(t)))
+    ticket["status"] = "open"
+    return ticket
+
+
+def get_open_queue(tickets: list[Ticket]) -> list[Ticket]:
+    """Return open tickets sorted by priority, then ascending numeric ID.
+
+    The source list is not reordered. Only tickets with status exactly 'open'
+    are included.
+    """
+    open_tickets = [ticket for ticket in tickets if ticket.get("status") == "open"]
+
+    def sort_key(ticket: Ticket) -> tuple[int, int]:
+        priority = ticket.get("priority")
+        ticket_id = ticket.get("id")
+        if priority not in _PRIORITY_ORDER:
+            raise ValueError(f"Unknown ticket priority: {priority!r}.")
+        if (
+            isinstance(ticket_id, bool)
+            or not isinstance(ticket_id, int)
+            or ticket_id < 1
+        ):
+            raise ValueError(f"Ticket ID must be a positive integer; got {ticket_id!r}.")
+        return (_PRIORITY_ORDER[priority], ticket_id)
+
+    return sorted(open_tickets, key=sort_key)
