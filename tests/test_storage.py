@@ -1,49 +1,194 @@
+
 import json
 import tempfile
 import unittest
 from pathlib import Path
-from campusflow.storage import load_tickets, save_tickets
-from campusflow.workflow import add_ticket, next_ticket_id
+
+from campusflow.storage import StorageError, load_tickets, save_tickets
+from campusflow.tickets import create_ticket, add_note
 
 
 class StorageTests(unittest.TestCase):
-    def test_save_and_reload_preserves_tickets(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "nested" / "tickets.json"
-            tickets = {}
-            add_ticket(tickets, "Wi-Fi", "Network", "high", 12)
-            save_tickets(tickets, path)
-            self.assertEqual(load_tickets(path), tickets)
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.directory = Path(self.temp_dir.name)
+        self.file_path = self.directory / "tickets.json"
 
-    def test_missing_file_returns_empty_dictionary(self):
-        with tempfile.TemporaryDirectory() as folder:
-            self.assertEqual(load_tickets(Path(folder) / "missing.json"), {})
+        self.tickets = []
+        create_ticket(
+            self.tickets, "Wi-Fi outage", "Network", "high", 12
+        )
+        create_ticket(
+            self.tickets, "Broken keyboard", "Hardware", "low", 1
+        )
 
-    def test_corrupted_json_raises_clear_error(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "tickets.json"
-            path.write_text("{not json", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "invalid JSON"):
-                load_tickets(path)
+    def test_missing_file_returns_empty_list(self):
+        self.assertEqual(load_tickets(self.file_path), [])
 
-    def test_non_object_json_is_rejected(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "tickets.json"
-            path.write_text("[]", encoding="utf-8")
-            with self.assertRaises(ValueError):
-                load_tickets(path)
+    def test_save_and_load_preserves_ticket_data(self):
+        save_tickets(self.file_path, self.tickets)
 
-    def test_create_after_reload_does_not_duplicate_ids(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "tickets.json"
-            tickets = {}
-            add_ticket(tickets, "First", "Other", "low", 1)
-            save_tickets(tickets, path)
-            restored = load_tickets(path)
-            next_ticket = add_ticket(restored, "Second", "Other", "low", 1)
-            self.assertEqual(next_ticket["id"], "T002")
-            self.assertEqual(len(restored), 2)
+        loaded = load_tickets(self.file_path)
 
+        self.assertEqual(loaded, self.tickets)
+
+    def test_saved_file_contains_valid_json(self):
+        save_tickets(self.file_path, self.tickets)
+
+        with self.file_path.open(encoding="utf-8") as file:
+            loaded_json = json.load(file)
+
+        self.assertEqual(loaded_json, self.tickets)
+
+    def test_malformed_json_raises_storage_error(self):
+        self.file_path.write_text("{invalid json", encoding="utf-8")
+
+        with self.assertRaises(StorageError):
+            load_tickets(self.file_path)
+
+        # The invalid file must not be silently replaced.
+        self.assertEqual(
+            self.file_path.read_text(encoding="utf-8"), "{invalid json"
+        )
+
+    def test_non_list_json_raises_storage_error(self):
+        self.file_path.write_text(
+            '{"id": 1}', encoding="utf-8"
+        )
+
+        with self.assertRaises(StorageError):
+            load_tickets(self.file_path)
+
+    def test_duplicate_ids_raise_storage_error(self):
+        duplicate_tickets = [self.tickets[0], self.tickets[0]]
+
+        self.file_path.write_text(
+            json.dumps(duplicate_tickets), encoding="utf-8"
+        )
+
+        with self.assertRaises(StorageError):
+            load_tickets(self.file_path)
+
+    def test_invalid_priority_raises_storage_error(self):
+        invalid_tickets = [dict(self.tickets[0])]
+        invalid_tickets[0]["priority"] = "low"
+        self.file_path.write_text(
+            json.dumps(invalid_tickets), encoding="utf-8"
+        )
+
+        with self.assertRaises(StorageError):
+            load_tickets(self.file_path)
+
+    def test_invalid_data_is_not_saved(self):
+        invalid_tickets = [dict(self.tickets[0])]
+        invalid_tickets[0]["affected_users"] = 0
+
+        with self.assertRaises(StorageError):
+            save_tickets(self.file_path, invalid_tickets)
+
+        self.assertFalse(self.file_path.exists())
+
+    def test_save_failure_raises_storage_error(self):
+        destination_is_directory = self.directory / "existing-directory"
+        destination_is_directory.mkdir()
+
+        with self.assertRaises(StorageError):
+            save_tickets(destination_is_directory, self.tickets)
+
+    def test_ids_remain_available_after_reload(self):
+        save_tickets(self.file_path, self.tickets)
+        loaded = load_tickets(self.file_path)
+
+        next_id = max(ticket["id"] for ticket in loaded) + 1
+        self.assertEqual(next_id, 3)
+
+    def test_notes_survive_save_and_load(self):
+        ticket = self.tickets[0]
+        ticket["notes"] = [
+            {"author": "Bront888", "message": "Investigating the outage"}
+        ]
+
+        save_tickets(self.file_path, self.tickets)
+        loaded = load_tickets(self.file_path)
+
+        self.assertEqual(
+            loaded[0]["notes"],
+            [
+                {
+                    "author": "Bront888",
+                    "message": "Investigating the outage",
+                }
+            ],
+        )
+
+    def test_legacy_ticket_without_notes_still_loads(self):
+        legacy_ticket = dict(self.tickets[0])
+        legacy_ticket.pop("notes", None)
+
+        self.file_path.write_text(
+            json.dumps([legacy_ticket]),
+            encoding="utf-8",
+        )
+
+        loaded = load_tickets(self.file_path)
+
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0]["id"], legacy_ticket["id"])
+        self.assertEqual(loaded[0].get("notes", []), [])
+
+    def test_invalid_notes_raise_storage_error(self):
+        invalid_ticket = dict(self.tickets[0])
+        invalid_ticket["notes"] = "not a list"
+
+        self.file_path.write_text(
+            json.dumps([invalid_ticket]),
+            encoding="utf-8",
+        )
+        with self.assertRaises(StorageError):
+            load_tickets(self.file_path)
+
+    def test_note_missing_author_is_rejected(self):
+        invalid_ticket = dict(self.tickets[0])
+        invalid_ticket["notes"] = [
+            {"message": "Investigating the outage"}
+        ]
+
+        self.file_path.write_text(
+            json.dumps([invalid_ticket]),
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(StorageError):
+            load_tickets(self.file_path)
+
+    def test_blank_note_message_is_rejected(self):
+        invalid_ticket = dict(self.tickets[0])
+        invalid_ticket["notes"] = [
+            {"author": "Bront888", "message": "  "}
+        ]
+
+        self.file_path.write_text(
+            json.dumps([invalid_ticket]),
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(StorageError):
+            load_tickets(self.file_path)
+
+
+    def test_unhashable_enum_fields_raise_storage_error(self):
+        for field in ("category", "urgency", "priority", "status"):
+            for invalid_value in ([], {}):
+                with self.subTest(field=field, invalid_value=invalid_value):
+                    invalid_ticket = dict(self.tickets[0])
+                    invalid_ticket[field] = invalid_value
+                    self.file_path.write_text(
+                        json.dumps([invalid_ticket]), encoding="utf-8"
+                    )
+
+                    with self.assertRaises(StorageError):
+                        load_tickets(self.file_path)
 
 if __name__ == "__main__":
     unittest.main()
