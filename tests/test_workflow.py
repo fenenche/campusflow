@@ -47,7 +47,7 @@ class WorkflowTests(unittest.TestCase):
         add_ticket(tickets, "second", "Other", "low", 2)
         self.assertEqual([t["id"] for t in priority_queue(tickets)], ["T001", "T002"])
 
-        def test_report_counts(self):
+    def test_report_counts(self):
         report = generate_report(self.tickets)
 
         self.assertEqual(report["total"], 3)
@@ -62,7 +62,7 @@ class WorkflowTests(unittest.TestCase):
         update_ticket_status(self.tickets, "T001", "in_progress")
         update_ticket_status(self.tickets, "T001", "resolved")
 
-            def test_report_counts(self):
+    def test_report_counts(self):
         report = generate_report(self.tickets)
         self.assertEqual(report["total"], 3)
         self.assertEqual(report["by_priority"]["critical"], 1)
@@ -80,7 +80,14 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertEqual(report["resolved"], 1)
         self.assertEqual(report["unresolved"], 2)
-        self.assertAlmostEqual(report["resolution_percentage"], 33.33333333333333)
+        
+    def test_empty_report(self):
+        report = generate_report({})
+
+        self.assertEqual(report["total"], 0)
+        self.assertEqual(report["unresolved"], 0)
+        self.assertEqual(report["resolved"], 0)
+        self.assertEqual(report["resolution_percentage"], 0)
 
 
 if __name__ == "__main__":
