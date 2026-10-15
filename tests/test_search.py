@@ -1,60 +1,56 @@
-"""Case-insensitive ticket title search and composable filters."""
+"""Regression tests for ticket search and AND-combined filters."""
 
-from __future__ import annotations
-
-from typing import Any, Iterable
-
-Ticket = dict[str, Any]
-CATEGORIES = ("Network", "Hardware", "Software", "Other")
-STATUSES = ("open", "in_progress", "resolved")
-PRIORITIES = ("critical", "high", "medium", "low")
+import unittest
+from campusflow.search import search_tickets
 
 
-def _normalise_filter(value: str | None, allowed: tuple[str, ...], field: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ValueError(f"{field.title()} filter must be text.")
-    normalised = value.strip().casefold()
-    allowed_normalised = {item.casefold() for item in allowed}
-    if normalised not in allowed_normalised:
-        raise ValueError(f"Invalid {field} filter: {value!r}.")
-    return normalised
+class SearchTests(unittest.TestCase):
+    def setUp(self):
+        self.tickets = [
+            {"id": 1, "title": "Campus WiFi Problem", "category": "Network", "status": "open", "priority": "critical"},
+            {"id": 2, "title": "Broken Laptop", "category": "Hardware", "status": "in_progress", "priority": "high"},
+            {"id": 3, "title": "WiFi Password Help", "category": "Network", "status": "resolved", "priority": "low"},
+        ]
+
+    def test_empty_query_returns_all(self):
+        self.assertEqual(search_tickets(self.tickets), self.tickets)
+
+    def test_title_substring_is_case_insensitive(self):
+        self.assertEqual([t["id"] for t in search_tickets(self.tickets, "WIFI")], [1, 3])
+
+    def test_query_is_substring_not_exact_match(self):
+        self.assertEqual([t["id"] for t in search_tickets(self.tickets, "Laptop")], [2])
+
+    def test_no_match_returns_empty_list(self):
+        self.assertEqual(search_tickets(self.tickets, "printer"), [])
+
+    def test_category_filter_is_case_insensitive(self):
+        self.assertEqual([t["id"] for t in search_tickets(self.tickets, category="network")], [1, 3])
+
+    def test_status_filter(self):
+        self.assertEqual([t["id"] for t in search_tickets(self.tickets, status="in_progress")], [2])
+
+    def test_priority_filter(self):
+        self.assertEqual([t["id"] for t in search_tickets(self.tickets, priority="high")], [2])
+
+    def test_all_filters_use_and_semantics(self):
+        result = search_tickets(self.tickets, "wifi", "Network", "open", "critical")
+        self.assertEqual([t["id"] for t in result], [1])
+        self.assertEqual(search_tickets(self.tickets, "wifi", "Network", "open", "low"), [])
+
+    def test_invalid_filter_rejected(self):
+        with self.assertRaises(ValueError):
+            search_tickets(self.tickets, category="Food")
+
+    def test_non_text_query_rejected(self):
+        with self.assertRaises(ValueError):
+            search_tickets(self.tickets, title_query=None)
+
+    def test_search_does_not_mutate_collection(self):
+        before = [dict(ticket) for ticket in self.tickets]
+        search_tickets(self.tickets, "wifi", category="Network")
+        self.assertEqual(self.tickets, before)
 
 
-def search_tickets(
-    tickets: Iterable[Ticket],
-    title_query: str = "",
-    category: str | None = None,
-    status: str | None = None,
-    priority: str | None = None,
-) -> list[Ticket]:
-    """Return matching tickets without mutating the source iterable.
-
-    A title query is a case-insensitive substring. All supplied filters are
-    conjunctive (AND semantics); empty title query and omitted filters impose
-    no restriction.
-    """
-    if not isinstance(title_query, str):
-        raise ValueError("Title search must be text.")
-
-    category_filter = _normalise_filter(category, CATEGORIES, "category")
-    status_filter = _normalise_filter(status, STATUSES, "status")
-    priority_filter = _normalise_filter(priority, PRIORITIES, "priority")
-    query = title_query.strip().casefold()
-
-    matches: list[Ticket] = []
-    for ticket in tickets:
-        title = ticket.get("title", "")
-        if not isinstance(title, str):
-            continue
-        if query not in title.casefold():
-            continue
-        if category_filter is not None and str(ticket.get("category", "")).casefold() != category_filter:
-            continue
-        if status_filter is not None and str(ticket.get("status", "")).casefold() != status_filter:
-            continue
-        if priority_filter is not None and str(ticket.get("priority", "")).casefold() != priority_filter:
-            continue
-        matches.append(ticket)
-    return matches
+if __name__ == "__main__":
+    unittest.main()

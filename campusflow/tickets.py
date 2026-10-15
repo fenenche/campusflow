@@ -1,188 +1,145 @@
+#Tickets creation, validation, lookup and priority calculation.
 
-#JSON persistence for CampusFlow tickets.
-
-import json
-import os
-import tempfile
-from pathlib import Path
-
-from .tickets import calculate_priority
-
-
-class StorageError(Exception):
-    """Raised when ticket data cannot be safely loaded or saved."""
-
-
-REQUIRED_FIELDS = {
-    "id",
-    "title",
-    "category",
-    "urgency",
-    "affected_users",
-    "priority",
-    "status",
-    "assigned_to",
+CATEGORIES = {
+    "network": "Network",
+    "hardware": "Hardware",
+    "software": "Software",
+    "other": "Other",
 }
 
-VALID_CATEGORIES = {"Network", "Hardware", "Software", "Other"}
-VALID_URGENCIES = {"low", "medium", "high"}
-VALID_PRIORITIES = {"critical", "high", "medium", "low"}
-VALID_STATUSES = {"open", "in_progress", "resolved"}
+
+URGENCIES = {"low", "medium", "high"}
+
+PRIORITY_ORDER = {
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    "low": 3,
+}
 
 
-def _validate_tickets(tickets):
-    #Reject invalid records before loading or saving them.
-    if not isinstance(tickets, list):
-        raise StorageError("Ticket data must be a JSON list.")
+def _normalize_choice(value, allowed, field_name):
+    #Normalize a string choice or reject an invalid value.
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
 
-    seen_ids = set()
+    normalized = value.strip().casefold()
 
-    for index, ticket in enumerate(tickets):
-        location = f"Ticket at index {index}"
-
-        if not isinstance(ticket, dict):
-            raise StorageError(f"{location} must be an object.")
-
-        missing = REQUIRED_FIELDS - ticket.keys()
-        if missing:
-            fields = ", ".join(sorted(missing))
-            raise StorageError(f"{location} is missing fields: {fields}.")
-
-        ticket_id = ticket["id"]
-        if (
-            isinstance(ticket_id, bool)
-            or not isinstance(ticket_id, int)
-            or ticket_id <= 0
-        ):
-            raise StorageError(
-                f"{location} has an invalid positive integer ID."
-            )
-
-        if ticket_id in seen_ids:
-            raise StorageError(
-                f"Duplicate ticket ID {ticket_id} in stored data."
-            )
-        seen_ids.add(ticket_id)
-
-        if not isinstance(ticket["title"], str) or not ticket["title"].strip():
-            raise StorageError(f"{location} has an invalid title.")
-
-        if not isinstance(ticket["category"], str) or ticket["category"] not in VALID_CATEGORIES:
-            raise StorageError(f"{location} has an invalid category.")
-
-        if not isinstance(ticket["urgency"], str) or ticket["urgency"] not in VALID_URGENCIES:
-            raise StorageError(f"{location} has an invalid urgency.")
-
-        users = ticket["affected_users"]
-        if (
-            isinstance(users, bool)
-            or not isinstance(users, int)
-            or users <= 0
-        ):
-            raise StorageError(
-                f"{location} has an invalid affected_users value."
-            )
-
-        if not isinstance(ticket["priority"], str) or ticket["priority"] not in VALID_PRIORITIES:
-            raise StorageError(f"{location} has an invalid priority.")
-
-        expected_priority = calculate_priority(ticket["urgency"], users)
-        if ticket["priority"] != expected_priority:
-            raise StorageError(
-                f"{location} has priority {ticket['priority']!r}; "
-                f"expected {expected_priority!r}."
-            )
-
-        if not isinstance(ticket["status"], str) or ticket["status"] not in VALID_STATUSES:
-            raise StorageError(f"{location} has an invalid status.")
-
-        assigned_to = ticket["assigned_to"]
-        if assigned_to is not None and (
-            not isinstance(assigned_to, str) or not assigned_to.strip()
-        ):
-            raise StorageError(
-                f"{location} has an invalid assigned_to value."
-            )
-
-        # Notes are optional for backward compatibility.
-        notes = ticket.get("notes", [])
-
-        if not isinstance(notes, list):
-            raise StorageError(f"{location} has invalid notes.")
-
-        for note_index, note in enumerate(notes):
-            note_location = f"{location}, note at index {note_index}"
-
-            if not isinstance(note, dict):
-                raise StorageError(
-                    f"{note_location} must be an object."
-                )
-
-            author = note.get("author")
-            message = note.get("message")
-
-            if not isinstance(author, str) or not author.strip():
-                raise StorageError(
-                    f"{note_location} has an invalid author."
-                )
-
-            if not isinstance(message, str) or not message.strip():
-                raise StorageError(
-                    f"{note_location} has an invalid message."
-                )
+    if normalized not in allowed:
+        choices = ", ".join(sorted(allowed.values()) if isinstance(
+            allowed, dict
+        ) else sorted(allowed))
+        raise ValueError(
+            f"Invalid {field_name}. Choose one of: {choices}."
+        )
+    return allowed[normalized] if isinstance(allowed, dict) else normalized
 
 
-def load_tickets(path):
-    # Load and validate tickets; a missing file means a fresh start.
-    file_path = Path(path)
-
-    try:
-        with file_path.open("r", encoding="utf-8") as file:
-            tickets = json.load(file)
-    except FileNotFoundError:
-        return []
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise StorageError(
-            f"Cannot read ticket data from {file_path}: invalid JSON."
-        ) from exc
-    except OSError as exc:
-        raise StorageError(
-            f"Cannot read ticket data from {file_path}: {exc}"
-        ) from exc
-
-    _validate_tickets(tickets)
-    return tickets
+def _validate_affected_users(affected_users):
+    #Require a positive whole-number count, excluding booleans
+    if (
+        isinstance(affected_users, bool)
+        or not isinstance(affected_users, int)
+        or affected_users <= 0
+    ):
+        raise ValueError("Affected users must be a positive whole number")
 
 
-def save_tickets(path, tickets):
-    #Validate and atomically save tickets as JSON.
-    _validate_tickets(tickets)
-    file_path = Path(path)
-    temporary_path = None
+def calculate_priority(urgency, affected_users):
+    #Calculate priority using the agreed rule precedence.
+    _normalize_urgency = _normalize_choice(
+        urgency, {value: value for value in URGENCIES}, "urgency"
+    )
+    _validate_affected_users(affected_users)
 
-    try:
-        file_path.parent.mkdir(parents=True, exist_ok=True)
+    if _normalize_urgency == "high" and affected_users >= 10:
+        return "critical"
 
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=file_path.parent,
-            prefix=f".{file_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temporary_file:
-            temporary_path = Path(temporary_file.name)
-            json.dump(tickets, temporary_file, indent=2, ensure_ascii=False)
-            temporary_file.write("\n")
+    if _normalize_urgency == "high" or affected_users >= 10:
+        return "high"
 
-        os.replace(temporary_path, file_path)
-    except (OSError, TypeError, ValueError) as exc:
-        raise StorageError(
-            f"Cannot save ticket data to {file_path}: {exc}"
-        ) from exc
-    finally:
-        if temporary_path is not None:
-            try:
-                temporary_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+    if _normalize_urgency == "medium" or affected_users >= 3:
+        return "medium"
+
+    return "low"
+
+
+def get_next_ticket_id(tickets):
+    #Return the next ID after the largest existing tickets Id
+    existing_ids = [
+        ticket["id"]
+        for ticket in tickets
+        if isinstance(ticket.get("id"), int)
+        and not isinstance(ticket.get("id"), bool)
+        and ticket["id"] > 0
+    ]
+
+    return max(existing_ids, default=0) + 1
+
+
+def find_ticket(tickets, ticket_id):
+    #Find a ticket by ID or raise KeyError
+    for ticket in tickets:
+        if ticket["id"] == ticket_id:
+            return ticket
+
+    raise KeyError(f"Ticket")
+
+def create_ticket(tickets, title, category, urgency, affected_users):
+    #Validate and  append a new ticket, rteturning the new record.
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("Ticket title cannot be blank")
+
+    _normalize_category = _normalize_choice(category, CATEGORIES, "category")
+
+    _normalize_urgency = _normalize_choice(urgency, {value: value for value in URGENCIES}, "urgency")
+
+    _validate_affected_users(affected_users)
+
+    priority = calculate_priority(_normalize_urgency, affected_users)
+
+    ticket = {
+        "id": get_next_ticket_id(tickets),
+        "title": title.strip(),
+        "category": _normalize_category,
+        "urgency": _normalize_urgency,
+        "affected_users": affected_users,
+        "priority": priority,
+        "status": "open",
+        "assigned_to": None
+    }
+
+    tickets.append(ticket)
+    return ticket
+
+def add_note(tickets, ticket_id, author, message):
+    #Add a validated note to an existing ticket.
+
+    ticket = find_ticket(tickets, ticket_id)
+
+    if ticket.get("status") == "resolved":
+        raise ValueError(
+            "Resolved tickets must be reopened before adding notes."
+        )
+
+    if not isinstance(author, str) or not author.strip():
+        raise ValueError("Note Author be blank.")
+
+    if not isinstance(message, str) or not message.strip():
+        raise ValueError("Note message cannot be blank")
+
+    #Prepare the complete note before mutating the ticket.
+
+    note = {
+        "author": author.strip(),
+        "message": message.strip(),
+    }
+
+    #Older tickets may not have a note field.
+    existing_notes = ticket.get("notes", [])
+    if not isinstance(existing_notes, list):
+        raise ValueError("Ticket note must be list.")
+
+    ticket["notes"] = [*existing_notes, note]
+    return ticket
+

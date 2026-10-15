@@ -1,23 +1,172 @@
-# Design decisions
+# CampusFlow Design Decisions
 
-## Separation of responsibilities
-- `tickets.py` contains pure input validation, normalization, and priority calculation so these rules can be tested without terminal input or file I/O.
-- `workflow.py` owns IDs, assignment, lifecycle transitions, and queue ordering.
-- `storage.py` owns JSON input/output and reports clear errors for malformed or unexpected data.
-- `reports.py` calculates summaries from the current ticket mapping.
-- `main.py` handles prompts and display, delegating business logic to the modules above.
+## 1. Purpose and scope
 
-## Data model
-Tickets are dictionaries keyed by their unique IDs (for example, `T001`). Each record contains `id`, `title`, `category`, `urgency`, `affected_users`, `priority`, `status`, and `assigned_to`. A dictionary makes ID lookup and updates straightforward and serializes naturally to a JSON object.
+CampusFlow is a standard-library Python command-line ticket tracker for the AI-Native Engineering Sprint. It supports ticket creation, viewing, assignment, workflow transitions, an open-ticket queue, reports, and JSON persistence.
 
-## Priority
-Rules are checked in the specified order so the combined high-urgency/large-impact case becomes `critical` before the broader `high` rule can match. Input strings are normalized to support case variations consistently.
+Constraints:
+- Python standard library only for the application and tests.
+- Use `unittest` for automated tests and `json` for persistence.
+- No database, web API, or third-party application framework.
+- Keep input/output in the CLI; business logic must be testable without interactive prompts.
 
-## Lifecycle
-New tickets start `open`. Only assigned tickets may transition to `in_progress`, and those tickets may transition to `resolved`. Resolved tickets may be reopened to `open`. Unsupported transitions raise `ValueError` instead of silently changing state.
+## 2. Architecture and module responsibilities
 
-## Persistence and IDs
-A missing JSON file is treated as an empty store. Writes create parent directories. Invalid JSON and an unexpected top-level structure raise a useful `ValueError`. ID generation scans existing numeric `T` IDs and chooses the next number, preventing collisions after reload and avoiding reuse of a deleted lower ID.
+- `main.py`: menu loop, input/output, friendly error messages, and orchestration.
+- `campusflow/tickets.py`: ticket validation, creation, lookup, ID allocation, and priority calculation.
+- `campusflow/workflow.py`: assignment, status transitions, reopening, and open queue.
+- `campusflow/storage.py`: JSON loading/saving and validation of persisted records.
+- `campusflow/reports.py`: total, status, and priority counts.
+- `tests/`: automated tests independent of interactive menu input.
+- `docs/`: design decisions and genuine AI learning log.
 
-## Queue and report
-The open queue sorts by priority (`critical`, `high`, `medium`, `low`) and then numeric ticket ID. Reports provide total counts by status, priority, and category without changing ticket records.
+Modules must not prompt users for input. The CLI calls business functions and translates expected exceptions into readable messages.
+
+## 3. Ticket data model
+
+Each ticket is a dictionary with these fields:
+
+| Field | Type | Rule |
+|---|---|---|
+| `id` | integer | Positive, unique, stable across reloads |
+| `title` | string | Required; whitespace-only titles rejected |
+| `category` | string | `Network`, `Hardware`, `Software`, or `Other` |
+| `urgency` | string | `low`, `medium`, or `high` |
+| `affected_users` | integer | Positive whole number |
+| `priority` | string | Calculated, not user-supplied |
+| `status` | string | `open`, `in_progress`, or `resolved` |
+| `assigned_to` | string or null | `None` until assigned |
+
+New tickets start with status `open` and `assigned_to = None`. Trim surrounding whitespace and normalize category and urgency case. Invalid categories and urgency values are rejected. Reject zero, negative, decimal, and non-numeric affected-user values.
+
+## 4. Priority algorithm
+
+Evaluate rules in this exact order; the first matching rule wins:
+
+1. High urgency AND at least 10 affected users -> `critical`.
+2. High urgency OR at least 10 affected users -> `high`.
+3. Medium urgency OR at least 3 affected users -> `medium`.
+4. Otherwise -> `low`.
+
+Boundary tests must cover 2/3 users and 9/10 users, and overlapping conditions.
+
+## 5. Workflow and mutation policy
+
+Permitted forward transitions:
+- `open -> in_progress`
+- `in_progress -> resolved`
+
+An unassigned ticket cannot enter `in_progress`. A resolved ticket cannot be changed or reassigned until the explicit reopen operation sets its status to `open`. Reopening is not an ordinary forward transition and must not be implemented as a generic status change.
+
+Rejected operations must not leave partially modified ticket data.
+
+## 6. Queue and reporting semantics
+
+Queue policy is **open-only**: include tickets whose status is exactly `open`; exclude `in_progress` and `resolved`.
+
+Sort queue results by priority in this order: `critical`, `high`, `medium`, `low`. Within a priority, sort by ascending numeric ticket ID. Return a new sorted list without reordering the caller's collection.
+
+Reports include the total number of tickets, counts by every supported status, and counts by every supported priority. Categories with zero tickets must still appear with count zero. An empty collection must return a valid all-zero report.
+
+## 7. Persistence and error handling
+
+Persist tickets as JSON using the standard library.
+- A missing file means a fresh start and returns an empty list.
+- Malformed JSON or invalid persisted records must raise a clear storage error; never silently discard or overwrite malformed data.
+- Round trips preserve every ticket field and ID.
+- ID allocation after reload must avoid collisions.
+- Save after each successful mutation. Do not save a rejected operation as a successful change.
+
+Expected exceptions:
+- `ValueError`: invalid business input, invalid transition, or invalid assignment.
+- `KeyError`: requested ticket ID does not exist.
+- `StorageError` (a dedicated storage exception): malformed/unusable persisted data or storage failures that the CLI should report clearly.
+
+## 8. Shared function contracts
+
+### `campusflow/tickets.py`
+- `create_ticket(tickets, title, category, urgency, affected_users) -> dict`: validate, allocate a unique ID, calculate priority, initialize status/assignment, append and return the new ticket. Invalid inputs raise `ValueError`.
+- `find_ticket(tickets, ticket_id) -> dict`: return the ticket or raise `KeyError`.
+- `calculate_priority(urgency, affected_users) -> str`: apply the ordered priority rules above.
+- `get_next_ticket_id(tickets) -> int`: return the next available positive ID, including after a reload.
+
+### `campusflow/workflow.py`
+- `assign_ticket(tickets, ticket_id, staff_name) -> dict`: require an existing ticket and a nonblank staff name; return the updated ticket. Raise `KeyError` for an unknown ID and `ValueError` for invalid assignment or a resolved ticket.
+- `change_status(tickets, ticket_id, new_status) -> dict`: enforce allowed transitions and the assignment prerequisite. Raise `KeyError` for an unknown ID and `ValueError` for invalid transitions or mutation of a resolved ticket.
+- `reopen_ticket(tickets, ticket_id) -> dict`: explicitly change a resolved ticket to `open`; raise `KeyError` for an unknown ID and `ValueError` if the ticket is not resolved.
+- `get_open_queue(tickets) -> list[dict]`: return a newly sorted list of open tickets only.
+
+### `campusflow/reports.py`
+- `generate_report(tickets) -> dict`: return total count plus status and priority count mappings; include zero-valued keys.
+
+### `campusflow/storage.py`
+- `load_tickets(path) -> list[dict]`: return an empty list when the file is absent; validate loaded records; raise `StorageError` for malformed JSON or unusable persisted data.
+- `save_tickets(path, tickets) -> None`: write valid JSON and surface failures clearly.
+
+Function names, arguments, return shapes, and error behavior are shared contracts. Any change requires agreement by both engineers and an update to this document before the other branch relies on it.
+
+## 9. Team ownership and integration
+
+- Engineer A: Bront888 — ticket creation/validation/priority and JSON persistence.
+- Engineer B: chikafor — assignment, workflow, queue, and reports.
+- Both engineers: agree on contracts, contribute tests, integrate CLI, review the partner's PR, and verify the final application.
+- Feature branches use `feat/<issue-number>-<short-description>`.
+- Each engineer authors a PR and reviews the partner's PR. Each PR must receive substantive review observations; authors address feedback and may not approve their own PR.
+- Run the complete suite on integrated `main` before the demo.
+
+## 10. Testing and acceptance
+
+Run:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Test successful behavior and rejection cases: input normalization, invalid values, priority boundaries, unknown IDs, blank staff names, unassigned transitions, invalid transitions, resolved-ticket immutability, reopen, queue filtering/order, empty reports, missing files, JSON round trips, malformed data, and ID continuity. At least eight meaningful tests are required; broader boundary coverage is expected.
+
+## 11. AI learning and verification
+
+Each engineer records at least three genuine AI learning interactions in `docs/ai-learning-log.md`. Each entry records the real prompt/question, what was tried or learned, how the result was independently verified, and the outcome in the engineer's own words. At least one entry must document a verified correction or rejection of an AI suggestion. Do not fabricate prompts, experiments, or verification evidence.
+
+
+## 12. CampusFlow Next extension contracts (2026-10-14)
+
+This section extends the original design without replacing the existing architecture. Where the extension adds behavior, this section supplements the earlier baseline contract.
+
+### Structured notes
+
+- `add_note(tickets, ticket_id, author, message) -> dict` returns the updated ticket.
+- Notes are stored in the ticket's `notes` list as `{"author": <trimmed string>, "message": <trimmed string>}`.
+- Author and message must be nonblank strings after trimming.
+- An unknown ticket ID raises `KeyError`; invalid note input or malformed existing notes raise `ValueError`.
+- A resolved ticket rejects note additions until it is explicitly reopened.
+- Persisted notes are validated on load/save. A missing `notes` field is allowed for legacy ticket records; malformed supplied notes raise `StorageError`.
+- Any rejected note operation must leave the entire ticket collection unchanged.
+
+### Search and combined filters
+
+- Title search uses case-insensitive substring matching.
+- Category, status, and priority filters are optional. When multiple filters are supplied, every supplied filter must match (AND semantics).
+- Search and filtering must not mutate or reorder the source ticket collection.
+
+### Extended reports
+
+Reports preserve the existing total, status, and priority counts and add category counts, resolution percentage, and unresolved-ticket count(s). Every supported category/status/priority should have a zero-valued key when empty. Empty input must produce a valid report without division by zero. The exact return shape should remain consistent across the implementation and its tests.
+
+### Engineering Understanding Check
+
+The sprint includes a six-question check covering the project's actual design and implementation. The CLI must handle answers, calculate a score, and show a result. See [engineering-understanding-check.md](engineering-understanding-check.md) for the documented question set and scoring guidance.
+
+### Current ownership
+
+For this sprint, Engineer A is Bront888 and Engineer B is Dorcas (`dinalegwu`). This current assignment supersedes the original ownership labels in Section 9 for the CampusFlow Next sprint only; the architecture and shared-contract rules above remain in force.
+
+### Sprint verification
+
+The required full-suite command is:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Record test outcomes only after the command has actually run on the relevant branch. The baseline record and post-merge verification status are tracked in [baseline-check.md](baseline-check.md). Each engineer must keep genuine AI-learning entries in [ai-learning-log.md](ai-learning-log.md); never fabricate prompts, experiments, or verification evidence.
