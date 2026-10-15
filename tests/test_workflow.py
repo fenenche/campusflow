@@ -10,7 +10,7 @@ from campusflow.workflow import (
 )
 
 
-    def make_ticket(
+def make_ticket(
     ticket_id, *, priority="medium", status="open", assigned_to=None
 ):
     return {
@@ -72,15 +72,10 @@ class WorkflowTransitionTests(unittest.TestCase):
         result = change_status(self.tickets, 1, "resolved")
         self.assertEqual(result["status"], "resolved")
 
-<<<<<<< Updated upstream
-    def test_report_counts(self):
-        report = generate_report(self.tickets)
-=======
     def test_skipping_a_status_is_rejected(self):
         with self.assertRaises(ValueError):
             change_status(self.tickets, 1, "resolved")
         self.assertEqual(self.tickets[0]["status"], "open")
->>>>>>> Stashed changes
 
     def test_resolved_ticket_requires_explicit_reopen_before_mutation(self):
         self.tickets[0]["status"] = "resolved"
@@ -93,21 +88,10 @@ class WorkflowTransitionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             reopen_ticket(self.tickets, 1)
 
-<<<<<<< Updated upstream
-    def test_report_counts(self):
-        report = generate_report(self.tickets)
-        self.assertEqual(report["total"], 3)
-        self.assertEqual(report["by_priority"]["critical"], 1)
-        self.assertEqual(report["by_status"]["open"], 3)
-        self.assertEqual(report["unresolved"], 3)
-        self.assertEqual(report["resolved"], 0)
-        self.assertEqual(report["resolution_percentage"], 0)
-=======
     def test_reopen_changes_resolved_ticket_to_open(self):
         self.tickets[0]["status"] = "resolved"
         result = reopen_ticket(self.tickets, 1)
         self.assertEqual(result["status"], "open")
->>>>>>> Stashed changes
 
 
 class QueueTests(unittest.TestCase):
@@ -122,18 +106,6 @@ class QueueTests(unittest.TestCase):
         ]
         original_ids = [ticket["id"] for ticket in tickets]
 
-<<<<<<< Updated upstream
-        self.assertEqual(report["resolved"], 1)
-        self.assertEqual(report["unresolved"], 2)
-        
-    def test_empty_report(self):
-        report = generate_report({})
-
-        self.assertEqual(report["total"], 0)
-        self.assertEqual(report["unresolved"], 0)
-        self.assertEqual(report["resolved"], 0)
-        self.assertEqual(report["resolution_percentage"], 0)
-=======
         queue = get_open_queue(tickets)
 
         self.assertEqual([ticket["id"] for ticket in queue], [1, 3, 2, 4])
@@ -147,7 +119,6 @@ class QueueTests(unittest.TestCase):
 
     def test_empty_queue_is_empty(self):
         self.assertEqual(get_open_queue([]), [])
->>>>>>> Stashed changes
 
 
 if __name__ == "__main__":
